@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Enhanced Web Application Reconnaissance Tool v4.0 - Pure Recon Edition
+Enhanced Web Application Reconnaissance Tool v5.0 - Deep Recon Edition
 Comprehensive intelligence gathering for authorized penetration testing
-Focus: Breadth of data collection, not scoring or filtering
+Focus: Maximum depth of data collection across all recon vectors
 
 For authorized security testing only - Use responsibly!
 """
@@ -24,6 +24,7 @@ import ssl
 import os
 import asyncio
 import aiohttp
+import subprocess
 from urllib.parse import urlparse, urljoin, parse_qs
 from datetime import datetime
 from collections import defaultdict
@@ -61,10 +62,12 @@ class ReconConfig:
     output_dir: str = './recon_output'
     rate_limit: int = 10
     skip_verify: bool = False
+    port_scan: bool = True
+    content_discovery: bool = True
 
 
-class PureWebRecon:
-    """Pure reconnaissance - comprehensive data collection without filtering"""
+class DeepWebRecon:
+    """Deep reconnaissance - maximum intelligence gathering"""
     
     def __init__(self, config: ReconConfig):
         """Initialize reconnaissance tool"""
@@ -152,7 +155,9 @@ class PureWebRecon:
                     'details': {}
                 },
                 'caa_records': [],
-                'wildcard_dns': None
+                'wildcard_dns': None,
+                'spf_records': [],
+                'dmarc_records': []
             },
             'subdomains': {
                 'discovered': [],
@@ -166,6 +171,11 @@ class PureWebRecon:
                 'hosting': {},
                 'ip_ranges': [],
                 'reverse_dns': []
+            },
+            'ports': {
+                'open': [],
+                'services': {},
+                'banners': {}
             },
             'technologies': {
                 'detected': {},
@@ -196,12 +206,17 @@ class PureWebRecon:
                 'endpoints': [],
                 'forms': [],
                 'comments': [],
-                'js_files': [],
-                'api_endpoints': [],
-                'parameters': [],
                 'interesting_files': [],
                 'robots_txt': None,
                 'sitemap': None
+            },
+            'content_discovery': {
+                'found': [],
+                'interesting': []
+            },
+            'parameters': {
+                'discovered': [],
+                'reflected': []
             },
             'third_party': {
                 'shodan': {},
@@ -209,7 +224,10 @@ class PureWebRecon:
                 'virustotal': {},
                 'securitytrails': {},
                 'hunter_io': {},
-                'urlscan': {}
+                'urlscan': {},
+                'alienvault': {},
+                'threatcrowd': {},
+                'hackertarget': {}
             },
             'historical': {
                 'wayback_snapshots': [],
@@ -289,8 +307,8 @@ class PureWebRecon:
         banner = f"""{Fore.CYAN}
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║   🔍  Pure Reconnaissance Tool v4.0                          ║
-║       Comprehensive Intelligence Gathering                    ║
+║   🔍  Deep Reconnaissance Tool v5.0                          ║
+║       Maximum Intelligence Gathering                          ║
 ║                                                               ║
 ║   Target: {self.target:<50} ║
 ║   Scan ID: {self.results['metadata']['scan_id']:<48} ║
@@ -319,6 +337,9 @@ class PureWebRecon:
         
         # CAA records
         self._get_caa_records()
+        
+        # SPF and DMARC
+        self._get_email_security_records()
         
         # Wildcard DNS detection
         self._check_wildcard_dns()
@@ -532,6 +553,34 @@ class PureWebRecon:
             if self.config.verbose:
                 self.results['errors'].append(f"CAA lookup failed: {str(e)}")
     
+    def _get_email_security_records(self):
+        """Get SPF and DMARC records"""
+        if not self.apex_domain:
+            return
+        
+        # SPF Records
+        try:
+            self._rate_limit()
+            answers = dns.resolver.resolve(self.apex_domain, 'TXT')
+            for rdata in answers:
+                txt_str = str(rdata).strip('"')
+                if txt_str.startswith('v=spf1'):
+                    self.results['dns']['spf_records'].append(txt_str)
+        except:
+            pass
+        
+        # DMARC Records
+        try:
+            self._rate_limit()
+            dmarc_domain = f"_dmarc.{self.apex_domain}"
+            answers = dns.resolver.resolve(dmarc_domain, 'TXT')
+            for rdata in answers:
+                txt_str = str(rdata).strip('"')
+                if txt_str.startswith('v=DMARC1'):
+                    self.results['dns']['dmarc_records'].append(txt_str)
+        except:
+            pass
+    
     def _check_wildcard_dns(self):
         """Check for wildcard DNS"""
         if not self.domain:
@@ -648,11 +697,13 @@ class PureWebRecon:
         
         # Cloud IP ranges (simplified)
         cloud_ranges = {
-            'AWS': ['52.', '54.', '35.'],
-            'Azure': ['13.', '40.', '52.'],
-            'GCP': ['34.', '35.'],
+            'AWS': ['52.', '54.', '35.', '3.', '18.'],
+            'Azure': ['13.', '40.', '52.', '104.'],
+            'GCP': ['34.', '35.', '104.'],
             'Cloudflare': ['104.', '172.'],
-            'Akamai': ['23.']
+            'Akamai': ['23.'],
+            'DigitalOcean': ['159.', '167.', '178.', '188.'],
+            'Linode': ['45.', '50.', '66.', '69.', '96.', '139.', '170.', '172.']
         }
         
         for provider, prefixes in cloud_ranges.items():
@@ -672,7 +723,9 @@ class PureWebRecon:
             'Fastly': ['fastly'],
             'CloudFront': ['cloudfront'],
             'MaxCDN': ['maxcdn'],
-            'Incapsula': ['incapsula']
+            'Incapsula': ['incapsula'],
+            'Sucuri': ['sucuri'],
+            'StackPath': ['stackpath']
         }
         
         for cname in cname_records:
@@ -684,10 +737,115 @@ class PureWebRecon:
                         self.print_status(f"CDN detected: {cdn}", "info")
                     return
     
+    # ==================== Port Scanning ====================
+    
+    def port_scanning(self):
+        """Comprehensive port scanning"""
+        if not self.config.port_scan:
+            return
+            
+        self.print_status("Starting port scanning...", "progress")
+        
+        if not self.ip_address:
+            self.print_status("No IP address available for port scanning", "warning")
+            return
+        
+        # Common ports
+        common_ports = [
+            21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 465, 587, 
+            993, 995, 1433, 1521, 1723, 3306, 3389, 5432, 5900, 6379, 8000, 8080, 
+            8443, 8888, 9090, 9200, 9300, 27017, 27018, 28017
+        ]
+        
+        self._scan_ports(common_ports)
+        
+        # Service detection on open ports
+        if self.results['ports']['open']:
+            self._detect_services()
+        
+        self.print_status(f"Port scan complete: {len(self.results['ports']['open'])} open ports", "success")
+    
+    def _scan_ports(self, ports):
+        """Scan specific ports"""
+        def scan_port(port):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex((self.ip_address, port))
+                sock.close()
+                
+                if result == 0:
+                    return port
+            except:
+                pass
+            return None
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            results = executor.map(scan_port, ports)
+        
+        self.results['ports']['open'] = sorted([p for p in results if p])
+    
+    def _detect_services(self):
+        """Detect services on open ports"""
+        for port in self.results['ports']['open']:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                sock.connect((self.ip_address, port))
+                
+                # Send HTTP request for web ports
+                if port in [80, 443, 8000, 8080, 8443, 8888, 9090]:
+                    sock.send(b"GET / HTTP/1.0\r\n\r\n")
+                
+                banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
+                sock.close()
+                
+                if banner:
+                    self.results['ports']['banners'][port] = banner[:200]
+                    
+                    # Extract service
+                    service = self._identify_service(banner, port)
+                    self.results['ports']['services'][port] = service
+            except:
+                pass
+    
+    def _identify_service(self, banner, port):
+        """Identify service from banner"""
+        banner_lower = banner.lower()
+        
+        services = {
+            'ssh': 'SSH',
+            'http': 'HTTP',
+            'ftp': 'FTP',
+            'smtp': 'SMTP',
+            'mysql': 'MySQL',
+            'postgresql': 'PostgreSQL',
+            'mongodb': 'MongoDB',
+            'redis': 'Redis',
+            'elasticsearch': 'Elasticsearch'
+        }
+        
+        for key, name in services.items():
+            if key in banner_lower:
+                return {'name': name, 'banner': banner}
+        
+        # Port-based detection
+        port_services = {
+            21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS',
+            80: 'HTTP', 110: 'POP3', 143: 'IMAP', 443: 'HTTPS', 445: 'SMB',
+            3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL', 6379: 'Redis',
+            8080: 'HTTP-Alt', 8443: 'HTTPS-Alt', 27017: 'MongoDB'
+        }
+        
+        if port in port_services:
+            return {'name': port_services[port], 'banner': banner}
+        
+        return {'name': 'Unknown', 'banner': banner}
+    
     # ==================== Subdomain Enumeration ====================
     
     def subdomain_enumeration(self):
-        """Comprehensive subdomain enumeration - no filtering"""
+        """Comprehensive subdomain enumeration"""
         self.print_status("Starting comprehensive subdomain enumeration...", "progress")
         
         if not self.domain:
@@ -700,6 +858,15 @@ class PureWebRecon:
         self._subdomain_securitytrails()
         self._subdomain_virustotal()
         self._subdomain_urlscan()
+        self._subdomain_rapiddns()
+        self._subdomain_alienvault()
+        self._subdomain_hackertarget()
+        self._subdomain_threatcrowd()
+        self._subdomain_dnsdumpster()
+        
+        # Try external tools if available
+        self._subdomain_amass()
+        self._subdomain_subfinder()
         
         # Remove duplicates
         self.results['subdomains']['discovered'] = list(set(self.results['subdomains']['discovered']))
@@ -732,7 +899,9 @@ class PureWebRecon:
             'server', 'mx1', 'chat', 'wap', 'my', 'svn', 'mail1', 'sites', 'proxy', 'ads',
             'host', 'crm', 'cms', 'backup', 'mx2', 'lyncdiscover', 'info', 'apps', 'download',
             'remote', 'db', 'forums', 'store', 'relay', 'files', 'newsletter', 'app', 'live',
-            'owa', 'en', 'start', 'sms', 'office', 'exchange', 'ipv4', 'dashboard', 'git'
+            'owa', 'en', 'start', 'sms', 'office', 'exchange', 'ipv4', 'dashboard', 'git',
+            'jenkins', 'jira', 'confluence', 'gitlab', 'bitbucket', 'docker', 'kubernetes',
+            'k8s', 'grafana', 'prometheus', 'elk', 'kibana', 'splunk', 'nagios', 'zabbix'
         ]
         
         def check_subdomain(sub):
@@ -878,6 +1047,221 @@ class PureWebRecon:
         except:
             pass
     
+    def _subdomain_rapiddns(self):
+        """Query RapidDNS for subdomains"""
+        if self.config.verbose:
+            self.print_status("Querying RapidDNS...", "info")
+        
+        try:
+            self._rate_limit()
+            url = f"https://rapiddns.io/subdomain/{self.domain}?full=1"
+            response = self.session.get(url, timeout=20)
+            
+            if response.status_code == 200:
+                pattern = r'<td>([a-zA-Z0-9.-]+\.' + re.escape(self.domain) + r')</td>'
+                found = list(set(re.findall(pattern, response.text, re.I)))
+                
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['rapiddns'] = found
+                
+                if self.config.verbose and found:
+                    self.print_status(f"RapidDNS: {len(found)} subdomains", "success")
+        except:
+            pass
+    
+    def _subdomain_alienvault(self):
+        """Query AlienVault OTX"""
+        if self.config.verbose:
+            self.print_status("Querying AlienVault OTX...", "info")
+        
+        try:
+            self._rate_limit()
+            url = f"https://otx.alienvault.com/api/v1/indicators/domain/{self.domain}/passive_dns"
+            response = self.session.get(url, timeout=20)
+            
+            if response.status_code == 200:
+                data = response.json()
+                found = []
+                for record in data.get('passive_dns', []):
+                    hostname = record.get('hostname', '')
+                    if hostname.endswith(self.domain):
+                        found.append(hostname)
+                
+                found = list(set(found))
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['alienvault'] = found
+                self.results['third_party']['alienvault'] = data
+                
+                if self.config.verbose and found:
+                    self.print_status(f"AlienVault: {len(found)} subdomains", "success")
+        except:
+            pass
+    
+    def _subdomain_hackertarget(self):
+        """Query HackerTarget"""
+        if self.config.verbose:
+            self.print_status("Querying HackerTarget...", "info")
+        
+        try:
+            self._rate_limit()
+            url = f"https://api.hackertarget.com/hostsearch/?q={self.domain}"
+            response = self.session.get(url, timeout=20)
+            
+            if response.status_code == 200:
+                found = []
+                for line in response.text.split('\n'):
+                    if ',' in line:
+                        subdomain = line.split(',')[0].strip()
+                        if subdomain.endswith(self.domain):
+                            found.append(subdomain)
+                
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['hackertarget'] = found
+                self.results['third_party']['hackertarget'] = {'count': len(found)}
+                
+                if self.config.verbose and found:
+                    self.print_status(f"HackerTarget: {len(found)} subdomains", "success")
+        except:
+            pass
+    
+    def _subdomain_threatcrowd(self):
+        """Query ThreatCrowd"""
+        if self.config.verbose:
+            self.print_status("Querying ThreatCrowd...", "info")
+        
+        try:
+            self._rate_limit()
+            url = f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={self.domain}"
+            response = self.session.get(url, timeout=20)
+            
+            if response.status_code == 200:
+                data = response.json()
+                found = data.get('subdomains', [])
+                
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['threatcrowd'] = found
+                self.results['third_party']['threatcrowd'] = data
+                
+                if self.config.verbose and found:
+                    self.print_status(f"ThreatCrowd: {len(found)} subdomains", "success")
+        except:
+            pass
+    
+    def _subdomain_dnsdumpster(self):
+        """Query DNSDumpster"""
+        if self.config.verbose:
+            self.print_status("Querying DNSDumpster...", "info")
+        
+        try:
+            self._rate_limit()
+            # DNSDumpster requires CSRF token handling
+            session = requests.Session()
+            url = "https://dnsdumpster.com/"
+            
+            # Get CSRF token
+            response = session.get(url, timeout=20)
+            csrf_token = re.search(r'name=\'csrfmiddlewaretoken\' value=\'(.+?)\'', response.text)
+            
+            if csrf_token:
+                token = csrf_token.group(1)
+                
+                # Submit search
+                data = {
+                    'csrfmiddlewaretoken': token,
+                    'targetip': self.domain,
+                    'user': 'free'
+                }
+                
+                headers = {
+                    'Referer': url,
+                    'User-Agent': self.config.user_agent
+                }
+                
+                response = session.post(url, data=data, headers=headers, timeout=20)
+                
+                if response.status_code == 200:
+                    # Extract subdomains from HTML
+                    pattern = r'<td class="col-md-4">([a-zA-Z0-9.-]+\.' + re.escape(self.domain) + r')<br>'
+                    found = list(set(re.findall(pattern, response.text, re.I)))
+                    
+                    self.results['subdomains']['discovered'].extend(found)
+                    self.results['subdomains']['sources']['dnsdumpster'] = found
+                    
+                    if self.config.verbose and found:
+                        self.print_status(f"DNSDumpster: {len(found)} subdomains", "success")
+        except:
+            pass
+    
+    def _subdomain_amass(self):
+        """Use Amass via subprocess if installed"""
+        if self.config.verbose:
+            self.print_status("Running Amass...", "info")
+        
+        try:
+            result = subprocess.run(
+                ['amass', 'enum', '-passive', '-d', self.domain, '-json', '/dev/stdout'],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                found = []
+                for line in result.stdout.strip().split('\n'):
+                    try:
+                        data = json.loads(line)
+                        if 'name' in data:
+                            found.append(data['name'])
+                    except:
+                        continue
+                
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['amass'] = found
+                
+                if self.config.verbose and found:
+                    self.print_status(f"Amass: {len(found)} subdomains", "success")
+        except FileNotFoundError:
+            if self.config.verbose:
+                self.print_status("Amass not installed, skipping", "warning")
+        except Exception as e:
+            if self.config.verbose:
+                self.results['errors'].append(f"Amass failed: {str(e)}")
+    
+    def _subdomain_subfinder(self):
+        """Use Subfinder via subprocess if installed"""
+        if self.config.verbose:
+            self.print_status("Running Subfinder...", "info")
+        
+        try:
+            result = subprocess.run(
+                ['subfinder', '-d', self.domain, '-silent', '-json'],
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            
+            if result.returncode == 0:
+                found = []
+                for line in result.stdout.strip().split('\n'):
+                    try:
+                        data = json.loads(line)
+                        if 'host' in data:
+                            found.append(data['host'])
+                    except:
+                        continue
+                
+                self.results['subdomains']['discovered'].extend(found)
+                self.results['subdomains']['sources']['subfinder'] = found
+                
+                if self.config.verbose and found:
+                    self.print_status(f"Subfinder: {len(found)} subdomains", "success")
+        except FileNotFoundError:
+            if self.config.verbose:
+                self.print_status("Subfinder not installed, skipping", "warning")
+        except Exception as e:
+            if self.config.verbose:
+                self.results['errors'].append(f"Subfinder failed: {str(e)}")
+    
     def _verify_subdomains(self):
         """Simple verification - just check if alive"""
         total = len(self.results['subdomains']['discovered'])
@@ -922,6 +1306,125 @@ class PureWebRecon:
         
         print()
     
+    # ==================== Content Discovery ====================
+    
+    def content_discovery(self):
+        """Discover hidden content"""
+        if not self.config.content_discovery:
+            return
+            
+        self.print_status("Starting content discovery...", "progress")
+        
+        target_url = self._get_target_url()
+        if not target_url:
+            return
+        
+        # Common paths
+        paths = [
+            'admin', 'administrator', 'login', 'wp-admin', 'dashboard', 'portal',
+            'api', 'v1', 'v2', 'v3', 'swagger', 'api-docs', 'docs', 'graphql',
+            'test', 'dev', 'staging', 'backup', 'old', 'temp', 'tmp',
+            '.git', '.env', '.htaccess', '.DS_Store', 'config.php', 'config.json',
+            'backup.sql', 'database.sql', 'db.sql', 'dump.sql',
+            'phpinfo.php', 'info.php', 'test.php',
+            'admin.php', 'login.php', 'upload.php',
+            'readme.md', 'README.md', 'CHANGELOG', 'VERSION',
+            'server-status', 'server-info',
+            's3', 'status', 'health', 'ping', 'metrics', 'actuator',
+            'console', 'phpmyadmin', 'pma', 'adminer',
+            'jenkins', 'tomcat', 'manager', 'jmx-console'
+        ]
+        
+        # Common extensions
+        extensions = ['', '.php', '.asp', '.aspx', '.jsp', '.html', '.txt', '.bak', '.old', '.zip', '.tar.gz']
+        
+        # Generate full list
+        full_paths = []
+        for path in paths:
+            for ext in extensions:
+                full_paths.append(f"/{path}{ext}")
+        
+        self._fuzz_paths(target_url, full_paths)
+        
+        self.print_status(f"Content discovery: {len(self.results['content_discovery']['found'])} paths found", "success")
+    
+    def _fuzz_paths(self, base_url, paths):
+        """Fuzz paths"""
+        def check_path(path):
+            try:
+                url = urljoin(base_url, path)
+                self._rate_limit()
+                response = self.session.get(url, timeout=5, allow_redirects=False)
+                
+                if response.status_code in [200, 201, 204, 301, 302, 307, 308, 401, 403]:
+                    return {
+                        'path': path,
+                        'url': url,
+                        'status': response.status_code,
+                        'size': len(response.content),
+                        'redirect': response.headers.get('Location')
+                    }
+            except:
+                pass
+            return None
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.threads) as executor:
+            results = executor.map(check_path, paths)
+        
+        for result in results:
+            if result:
+                self.results['content_discovery']['found'].append(result)
+                
+                # Mark interesting findings
+                if result['status'] in [200, 403] and any(x in result['path'].lower() for x in ['admin', 'config', '.env', '.git', 'backup']):
+                    self.results['content_discovery']['interesting'].append(result)
+    
+    # ==================== Parameter Discovery ====================
+    
+    def parameter_discovery(self):
+        """Discover URL parameters"""
+        self.print_status("Discovering parameters...", "progress")
+        
+        target_url = self._get_target_url()
+        if not target_url:
+            return
+        
+        # Common parameters
+        params = [
+            'id', 'page', 'search', 'q', 'query', 'keyword', 'lang', 'language',
+            'file', 'path', 'url', 'redirect', 'return', 'callback', 'debug',
+            'user', 'username', 'email', 'token', 'api_key', 'key',
+            'sort', 'order', 'limit', 'offset', 'start', 'end',
+            'filter', 'category', 'type', 'format', 'output', 'view',
+            'action', 'mode', 'module', 'controller', 'method'
+        ]
+        
+        self._test_parameters(target_url, params)
+        
+        self.print_status(f"Found {len(self.results['parameters']['discovered'])} parameters", "success")
+    
+    def _test_parameters(self, url, params):
+        """Test parameters"""
+        for param in params:
+            try:
+                test_value = 'xss_test_123'
+                test_url = f"{url}?{param}={test_value}"
+                
+                self._rate_limit()
+                response = self.session.get(test_url, timeout=5)
+                
+                if response.status_code == 200:
+                    self.results['parameters']['discovered'].append(param)
+                    
+                    # Check if reflected
+                    if test_value in response.text:
+                        self.results['parameters']['reflected'].append({
+                            'param': param,
+                            'url': test_url
+                        })
+            except:
+                pass
+    
     # ==================== Technology Detection ====================
     
     def technology_detection(self):
@@ -952,31 +1455,34 @@ class PureWebRecon:
             
             # CMS detection
             cms_indicators = {
-                'WordPress': ['wp-content', 'wp-includes'],
-                'Joomla': ['/components/com_'],
-                'Drupal': ['Drupal.settings'],
-                'Magento': ['Mage.Cookies']
+                'WordPress': ['wp-content', 'wp-includes', '/wp-json/'],
+                'Joomla': ['/components/com_', 'Joomla!'],
+                'Drupal': ['Drupal.settings', '/sites/default/'],
+                'Magento': ['Mage.Cookies', '/skin/frontend/'],
+                'Shopify': ['cdn.shopify.com', 'myshopify.com'],
+                'Wix': ['wix.com', 'parastorage'],
+                'Squarespace': ['squarespace.com']
             }
             
             for cms, indicators in cms_indicators.items():
                 if any(ind in html for ind in indicators):
                     self.results['technologies']['detected']['CMS'] = cms
+                    break
             
-            # JavaScript libraries
-            js_libs = {
-                'jQuery': r'jquery[.-]([0-9.]+)',
-                'React': r'react[.-]([0-9.]+)',
-                'Angular': r'angular[.-]([0-9.]+)',
-                'Vue': r'vue[.-]([0-9.]+)'
+            # JavaScript frameworks
+            js_frameworks = {
+                'React': ['react', '_react'],
+                'Angular': ['ng-version', 'angular'],
+                'Vue.js': ['vue', 'v-if', 'v-for'],
+                'jQuery': ['jquery'],
+                'Bootstrap': ['bootstrap']
             }
             
-            for lib, pattern in js_libs.items():
-                match = re.search(pattern, html, re.I)
-                if match:
-                    self.results['technologies']['javascript_libraries'].append({
-                        'name': lib,
-                        'version': match.group(1) if match.groups() else 'detected'
-                    })
+            for framework, indicators in js_frameworks.items():
+                if any(ind in html.lower() for ind in indicators):
+                    if 'JavaScript Framework' not in self.results['technologies']['detected']:
+                        self.results['technologies']['detected']['JavaScript Framework'] = []
+                    self.results['technologies']['detected']['JavaScript Framework'].append(framework)
             
             self.print_status("Technology detection completed", "success")
             
@@ -1094,7 +1600,11 @@ class PureWebRecon:
             f'site:{self.domain} inurl:wp-content',
             f'site:{self.domain} inurl:api',
             f'site:{self.domain} filetype:env',
-            f'site:{self.domain} filetype:sql'
+            f'site:{self.domain} filetype:sql',
+            f'site:{self.domain} inurl:config',
+            f'site:{self.domain} ext:log',
+            f'site:{self.domain} intitle:"Dashboard" inurl:dashboard',
+            f'site:{self.domain} intext:"api key" | intext:"api_key"'
         ]
         
         self.results['osint']['google_dorks'] = dorks
@@ -1252,11 +1762,6 @@ class PureWebRecon:
             self._rate_limit()
             response = self.session.get(target_url, timeout=self.config.timeout)
             
-            # Extract JS files
-            js_pattern = r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']\s*>'
-            js_files = re.findall(js_pattern, response.text, re.I)
-            self.results['web_analysis']['js_files'] = [urljoin(target_url, js) for js in js_files]
-            
             # Extract endpoints
             url_pattern = r'(?:href|src)=["\']([^"\']+)["\']'
             urls = re.findall(url_pattern, response.text, re.I)
@@ -1280,8 +1785,15 @@ class PureWebRecon:
                     'inputs': inputs
                 })
             
+            # Extract comments
+            comments = re.findall(r'<!--(.*?)-->', response.text, re.DOTALL)
+            self.results['web_analysis']['comments'] = [c.strip()[:200] for c in comments if c.strip()]
+            
             # Check robots.txt
             self._check_robots_txt()
+            
+            # Check sitemap
+            self._check_sitemap()
             
             self.print_status("Web content analysis completed", "success")
             
@@ -1300,7 +1812,25 @@ class PureWebRecon:
             response = self.session.get(robots_url, timeout=5)
             
             if response.status_code == 200:
-                self.results['web_analysis']['robots_txt'] = response.text[:1000]
+                self.results['web_analysis']['robots_txt'] = response.text[:2000]
+        except:
+            pass
+    
+    def _check_sitemap(self):
+        """Check sitemap.xml"""
+        target_url = self._get_target_url()
+        if not target_url:
+            return
+        
+        try:
+            sitemap_url = urljoin(target_url, '/sitemap.xml')
+            self._rate_limit()
+            response = self.session.get(sitemap_url, timeout=5)
+            
+            if response.status_code == 200:
+                # Extract URLs from sitemap
+                urls = re.findall(r'<loc>(.*?)</loc>', response.text)
+                self.results['web_analysis']['sitemap'] = urls[:100]
         except:
             pass
     
@@ -1372,6 +1902,13 @@ class PureWebRecon:
                             'subjectAltName': cert.get('subjectAltName', [])
                         }
                     }
+                    
+                    # Extract subdomains from cert
+                    for alt_name in cert.get('subjectAltName', []):
+                        if alt_name[0] == 'DNS':
+                            domain_name = alt_name[1].replace('*.', '')
+                            if domain_name.endswith(self.domain):
+                                self.results['subdomains']['discovered'].append(domain_name)
         except:
             pass
     
@@ -1382,7 +1919,9 @@ class PureWebRecon:
             'AWS WAF': ['x-amzn-', 'awselb'],
             'Akamai': ['akamai', 'x-akamai'],
             'Imperva': ['incap_ses', 'visid_incap'],
-            'F5 BIG-IP': ['BigIP', 'F5']
+            'F5 BIG-IP': ['BigIP', 'F5'],
+            'Sucuri': ['sucuri', 'x-sucuri'],
+            'Wordfence': ['wordfence']
         }
         
         headers_str = str(response.headers).lower()
@@ -1455,7 +1994,7 @@ class PureWebRecon:
         
         with open(filename, 'w') as f:
             f.write("="*70 + "\n")
-            f.write("PURE RECONNAISSANCE REPORT\n")
+            f.write("DEEP RECONNAISSANCE REPORT\n")
             f.write("="*70 + "\n\n")
             
             f.write(f"Target: {self.target}\n")
@@ -1472,6 +2011,16 @@ class PureWebRecon:
             f.write(f"DNSSEC: {'Enabled' if self.results['dns']['dnssec']['enabled'] else 'Disabled'}\n")
             f.write(f"Zone Transfer Attempts: {len(self.results['dns']['zone_transfer_attempts'])}\n\n")
             
+            # Ports
+            if self.results['ports']['open']:
+                f.write("-"*70 + "\n")
+                f.write("OPEN PORTS\n")
+                f.write("-"*70 + "\n")
+                for port in self.results['ports']['open']:
+                    service = self.results['ports']['services'].get(port, {})
+                    f.write(f"  • Port {port}: {service.get('name', 'Unknown')}\n")
+                f.write("\n")
+            
             # Subdomains
             f.write("-"*70 + "\n")
             f.write("SUBDOMAIN INTELLIGENCE\n")
@@ -1481,6 +2030,17 @@ class PureWebRecon:
             
             for sub in sorted(self.results['subdomains']['discovered'])[:100]:
                 f.write(f"  • {sub}\n")
+            
+            # Content Discovery
+            if self.results['content_discovery']['found']:
+                f.write("\n" + "-"*70 + "\n")
+                f.write("CONTENT DISCOVERY\n")
+                f.write("-"*70 + "\n")
+                f.write(f"Total Found: {len(self.results['content_discovery']['found'])}\n")
+                f.write(f"Interesting: {len(self.results['content_discovery']['interesting'])}\n\n")
+                
+                for item in self.results['content_discovery']['interesting'][:20]:
+                    f.write(f"  • {item['path']} ({item['status']})\n")
             
             # OSINT
             f.write("\n" + "-"*70 + "\n")
@@ -1505,36 +2065,34 @@ class PureWebRecon:
         verified_subs = len(self.results['subdomains']['verified'])
         emails = len(self.results['osint']['emails'])
         technologies = len(self.results['technologies']['detected'])
+        open_ports = len(self.results['ports']['open'])
+        content_found = len(self.results['content_discovery']['found'])
         
         html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Recon Report - {self.target}</title>
+    <title>Deep Recon Report - {self.target}</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; }}
         .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 40px 20px; text-align: center; }}
         .container {{ max-width: 1200px; margin: 20px auto; padding: 0 20px; }}
         .card {{ background: white; border-radius: 12px; padding: 25px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
+        .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; }}
         .metric {{ text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; }}
         .metric-value {{ font-size: 36px; font-weight: bold; color: #667eea; }}
-        .metric-label {{ color: #666; font-size: 14px; margin-top: 5px; }}
+        .metric-label {{ color: #666; font-size: 13px; margin-top: 5px; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
         th {{ background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; }}
         td {{ padding: 10px; border-bottom: 1px solid #eee; }}
         .list {{ list-style: none; max-height: 400px; overflow-y: auto; }}
         .list li {{ padding: 8px; border-bottom: 1px solid #eee; }}
-        .badge {{ display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; }}
-        .badge-success {{ background: #d4edda; color: #155724; }}
-        .badge-danger {{ background: #f8d7da; color: #721c24; }}
-        .badge-warning {{ background: #fff3cd; color: #856404; }}
-        .badge-info {{ background: #d1ecf1; color: #0c5460; }}
+        h2 {{ color: #333; margin-bottom: 15px; }}
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🔍 Pure Reconnaissance Report</h1>
+        <h1>🔍 Deep Reconnaissance Report</h1>
         <p style="font-size: 1.2em; margin-top: 10px;">Target: {self.target}</p>
         <p>Scan ID: {scan_id} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
     </div>
@@ -1545,11 +2103,19 @@ class PureWebRecon:
             <div class="metrics">
                 <div class="metric">
                     <div class="metric-value">{total_subs}</div>
-                    <div class="metric-label">Subdomains Discovered</div>
+                    <div class="metric-label">Subdomains</div>
                 </div>
                 <div class="metric">
                     <div class="metric-value">{verified_subs}</div>
-                    <div class="metric-label">Verified Alive</div>
+                    <div class="metric-label">Verified</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">{open_ports}</div>
+                    <div class="metric-label">Open Ports</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">{content_found}</div>
+                    <div class="metric-label">Content Found</div>
                 </div>
                 <div class="metric">
                     <div class="metric-value">{emails}</div>
@@ -1568,12 +2134,10 @@ class PureWebRecon:
             <p><strong>Nameservers:</strong> {len(self.results['dns']['nameservers'])}</p>
             <p><strong>MX Records:</strong> {len(self.results['dns']['mx_records'])}</p>
             <p><strong>DNSSEC:</strong> {'Enabled' if self.results['dns']['dnssec']['enabled'] else 'Disabled'}</p>
-            <p><strong>Zone Transfer Attempts:</strong> {len(self.results['dns']['zone_transfer_attempts'])}</p>
         </div>
         
         <div class="card">
-            <h2>🔗 Subdomain Intelligence</h2>
-            <p><strong>Total:</strong> {total_subs} | <strong>Verified:</strong> {verified_subs}</p>
+            <h2>🔗 Subdomain Intelligence ({total_subs} total)</h2>
             <ul class="list">
 """
         
@@ -1595,18 +2159,17 @@ class PureWebRecon:
     def _print_summary(self):
         """Print final summary"""
         print(f"\n{Fore.CYAN}{'='*70}")
-        print(f"{Fore.CYAN}RECONNAISSANCE COMPLETE")
+        print(f"{Fore.CYAN}DEEP RECONNAISSANCE COMPLETE")
         print(f"{Fore.CYAN}{'='*70}{Style.RESET_ALL}")
         
         print(f"\n{Fore.GREEN}Intelligence Gathered:{Style.RESET_ALL}")
         print(f"  • Subdomains: {len(self.results['subdomains']['discovered'])} ({len(self.results['subdomains']['verified'])} verified)")
+        print(f"  • Open Ports: {len(self.results['ports']['open'])}")
+        print(f"  • Content Discovered: {len(self.results['content_discovery']['found'])}")
         print(f"  • Email Addresses: {len(self.results['osint']['emails'])}")
         print(f"  • Employees: {len(self.results['osint']['employees'])}")
         print(f"  • Technologies: {len(self.results['technologies']['detected'])}")
-        print(f"  • DNS Records: {sum(len(v) if isinstance(v, list) else 1 for v in self.results['dns']['records'].values())}")
-        print(f"  • Nameservers: {len(self.results['dns']['nameservers'])}")
-        print(f"  • MX Records: {len(self.results['dns']['mx_records'])}")
-        print(f"  • Zone Transfers: {sum(1 for a in self.results['dns']['zone_transfer_attempts'] if a['success'])}/{len(self.results['dns']['zone_transfer_attempts'])}")
+        print(f"  • Parameters: {len(self.results['parameters']['discovered'])}")
         
         if self.results['security'].get('waf_detected'):
             print(f"\n{Fore.YELLOW}🛡️  WAF: {self.results['security']['waf_detected']}{Style.RESET_ALL}")
@@ -1630,6 +2193,11 @@ class PureWebRecon:
             self.subdomain_enumeration()
             self.technology_detection()
             self.osint_gathering()
+            
+            # Deep analysis
+            self.port_scanning()
+            self.content_discovery()
+            self.parameter_discovery()
             
             # Third-party intelligence
             self.third_party_intelligence()
@@ -1657,14 +2225,14 @@ class PureWebRecon:
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Pure Web Reconnaissance Tool v4.0 - Comprehensive Intelligence Gathering',
+        description='Deep Web Reconnaissance Tool v5.0 - Maximum Intelligence Gathering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python3 %(prog)s example.com
   python3 %(prog)s business.tiktok.com -v
   python3 %(prog)s example.com -t 20 --skip-verify
-  python3 %(prog)s example.com --proxy http://proxy:8080
+  python3 %(prog)s example.com --no-ports --no-content
         """
     )
     
@@ -1678,6 +2246,8 @@ Examples:
     parser.add_argument('-o', '--output', default='./recon_output', help='Output directory')
     parser.add_argument('--rate-limit', type=int, default=10, help='Rate limit (default: 10)')
     parser.add_argument('--skip-verify', action='store_true', help='Skip subdomain verification')
+    parser.add_argument('--no-ports', action='store_false', dest='port_scan', help='Skip port scanning')
+    parser.add_argument('--no-content', action='store_false', dest='content_discovery', help='Skip content discovery')
     
     args = parser.parse_args()
     
@@ -1691,10 +2261,12 @@ Examples:
         user_agent=args.user_agent if args.user_agent else ReconConfig.user_agent,
         output_dir=args.output,
         rate_limit=args.rate_limit,
-        skip_verify=args.skip_verify
+        skip_verify=args.skip_verify,
+        port_scan=args.port_scan,
+        content_discovery=args.content_discovery
     )
     
-    recon = PureWebRecon(config)
+    recon = DeepWebRecon(config)
     recon.run()
 
 
