@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Enhanced Web Application Reconnaissance Tool v5.0 - Deep Recon Edition
+Enhanced Web Application Reconnaissance Tool v5.1 - Deep Recon Edition
 Comprehensive intelligence gathering for authorized penetration testing
 Focus: Maximum depth of data collection across all recon vectors
+
+Features: DNS, Subdomains, OSINT, Port Scanning, Content Discovery,
+          Technology Detection, Security Analysis, Third-Party APIs
 
 For authorized security testing only - Use responsibly!
 """
@@ -293,29 +296,35 @@ class DeepWebRecon:
     def print_status(self, message: str, status: str = "info"):
         """Print colored status message"""
         symbols = {
-            "info": ("ℹ", Fore.CYAN),
-            "success": ("✓", Fore.GREEN),
-            "warning": ("⚠", Fore.YELLOW),
-            "error": ("✗", Fore.RED),
-            "progress": ("⟳", Fore.BLUE)
+            "info": ("[*]", Fore.CYAN),
+            "success": ("[+]", Fore.GREEN),
+            "warning": ("[!]", Fore.YELLOW),
+            "error": ("[-]", Fore.RED),
+            "progress": ("[~]", Fore.BLUE)
         }
-        symbol, color = symbols.get(status, ("•", Fore.WHITE))
-        print(f"{color}{symbol} {message}{Style.RESET_ALL}")
+        symbol, color = symbols.get(status, ("[.]", Fore.WHITE))
+        try:
+            print(f"{color}{symbol} {message}{Style.RESET_ALL}")
+        except UnicodeEncodeError:
+            print(f"{symbol} {message}")
         
     def print_banner(self):
         """Print tool banner"""
         banner = f"""{Fore.CYAN}
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   🔍  Deep Reconnaissance Tool v5.0                          ║
-║       Maximum Intelligence Gathering                          ║
-║                                                               ║
-║   Target: {self.target:<50} ║
-║   Scan ID: {self.results['metadata']['scan_id']:<48} ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
++===============================================================+
+|                                                               |
+|   Deep Reconnaissance Tool v5.1                               |
+|   Maximum Intelligence Gathering                              |
+|                                                               |
+|   Target: {self.target:<50} |
+|   Scan ID: {self.results['metadata']['scan_id']:<48} |
+|                                                               |
++===============================================================+
 {Style.RESET_ALL}"""
-        print(banner)
+        try:
+            print(banner)
+        except UnicodeEncodeError:
+            print(f"\n[Deep Recon v5.1] Target: {self.target} | Scan ID: {self.results['metadata']['scan_id']}\n")
         
     # ==================== DNS Reconnaissance ====================
     
@@ -655,7 +664,10 @@ class DeepWebRecon:
         
         # CDN detection
         self._detect_cdn()
-        
+
+        # Reverse DNS for IP range
+        self._reverse_dns_enumeration()
+
         self.print_status("Infrastructure mapping completed", "success")
     
     def _asn_lookup(self):
@@ -716,7 +728,7 @@ class DeepWebRecon:
     def _detect_cdn(self):
         """Detect CDN"""
         cname_records = self.results['dns']['records'].get('CNAME', [])
-        
+
         cdn_indicators = {
             'Cloudflare': ['cloudflare'],
             'Akamai': ['akamai', 'edgekey'],
@@ -727,7 +739,7 @@ class DeepWebRecon:
             'Sucuri': ['sucuri'],
             'StackPath': ['stackpath']
         }
-        
+
         for cname in cname_records:
             cname_lower = str(cname).lower()
             for cdn, indicators in cdn_indicators.items():
@@ -736,7 +748,53 @@ class DeepWebRecon:
                     if self.config.verbose:
                         self.print_status(f"CDN detected: {cdn}", "info")
                     return
-    
+
+    def _reverse_dns_enumeration(self):
+        """Enumerate nearby IPs via reverse DNS"""
+        if not self.ip_address:
+            return
+
+        if self.config.verbose:
+            self.print_status("Performing reverse DNS enumeration...", "info")
+
+        # Get the /24 range
+        ip_parts = self.ip_address.split('.')
+        if len(ip_parts) != 4:
+            return
+
+        base_ip = '.'.join(ip_parts[:3])
+        reverse_dns_results = []
+
+        # Check a sample of IPs in the same /24
+        sample_ips = [1, 2, 5, 10, 50, 100, 200, 254]
+
+        def check_reverse_dns(last_octet):
+            ip = f"{base_ip}.{last_octet}"
+            try:
+                reverse_name = dns.reversename.from_address(ip)
+                answers = dns.resolver.resolve(reverse_name, 'PTR', lifetime=3)
+                for rdata in answers:
+                    hostname = str(rdata).rstrip('.')
+                    return {'ip': ip, 'hostname': hostname}
+            except:
+                pass
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = executor.map(check_reverse_dns, sample_ips)
+
+        for result in results:
+            if result:
+                reverse_dns_results.append(result)
+                # Add hostname to subdomains if related
+                if self.domain and result['hostname'].endswith(self.domain):
+                    self.results['subdomains']['discovered'].append(result['hostname'])
+
+        self.results['infrastructure']['reverse_dns'] = reverse_dns_results
+
+        if self.config.verbose and reverse_dns_results:
+            self.print_status(f"Reverse DNS: {len(reverse_dns_results)} hostnames found", "info")
+
     # ==================== Port Scanning ====================
     
     def port_scanning(self):
@@ -1499,8 +1557,9 @@ class DeepWebRecon:
         self._search_github()
         self._hunter_io_lookup()
         self._google_dorking()
-        
-        self.print_status(f"OSINT: {len(self.results['osint']['emails'])} emails, {len(self.results['osint']['github_repos'])} repos", "success")
+        self._detect_social_media()
+
+        self.print_status(f"OSINT: {len(self.results['osint']['emails'])} emails, {len(self.results['osint']['code_mentions'])} code mentions", "success")
     
     def _harvest_emails(self):
         """Harvest emails"""
@@ -1608,7 +1667,39 @@ class DeepWebRecon:
         ]
         
         self.results['osint']['google_dorks'] = dorks
-    
+
+    def _detect_social_media(self):
+        """Detect social media profiles"""
+        if not self.domain:
+            return
+
+        if self.config.verbose:
+            self.print_status("Searching for social media profiles...", "info")
+
+        # Extract company/brand name from domain
+        brand = self.domain.split('.')[0]
+
+        social_platforms = {
+            'twitter': f'https://twitter.com/{brand}',
+            'linkedin': f'https://www.linkedin.com/company/{brand}',
+            'facebook': f'https://www.facebook.com/{brand}',
+            'instagram': f'https://www.instagram.com/{brand}',
+            'github': f'https://github.com/{brand}',
+            'youtube': f'https://www.youtube.com/@{brand}'
+        }
+
+        for platform, url in social_platforms.items():
+            try:
+                self._rate_limit()
+                response = self.session.head(url, timeout=5, allow_redirects=True)
+                if response.status_code == 200:
+                    self.results['osint']['social_media'][platform] = {
+                        'url': url,
+                        'exists': True
+                    }
+            except:
+                pass
+
     # ==================== Third-Party APIs ====================
     
     def third_party_intelligence(self):
@@ -1622,39 +1713,52 @@ class DeepWebRecon:
         self.print_status("Third-party intelligence collected", "success")
     
     def _query_shodan(self):
-        """Query Shodan"""
+        """Query Shodan via API"""
         api_key = self.api_keys.get('shodan')
         if not api_key:
             return
-        
+
         if self.config.verbose:
             self.print_status("Querying Shodan...", "info")
-        
+
+        target = self.ip_address if self.ip_address else self.domain
+
         try:
-            import shodan
-            api = shodan.Shodan(api_key)
-            
-            target = self.ip_address if self.ip_address else self.domain
-            result = api.host(target)
-            
-            self.results['third_party']['shodan'] = {
-                'ip': result.get('ip_str'),
-                'organization': result.get('org'),
-                'os': result.get('os'),
-                'ports': result.get('ports', []),
-                'vulnerabilities': result.get('vulns', []),
-                'hostnames': result.get('hostnames', []),
-                'domains': result.get('domains', []),
-                'services': result.get('data', [])
-            }
-            
-            # Add hostnames to subdomains
-            for hostname in result.get('hostnames', []):
-                if hostname.endswith(self.domain):
-                    self.results['subdomains']['discovered'].append(hostname)
-                    
-        except ImportError:
-            pass
+            # Use requests API directly for consistency
+            self._rate_limit()
+            url = f"https://api.shodan.io/shodan/host/{target}?key={api_key}"
+            response = self.session.get(url, timeout=20)
+
+            if response.status_code == 200:
+                result = response.json()
+
+                self.results['third_party']['shodan'] = {
+                    'ip': result.get('ip_str'),
+                    'organization': result.get('org'),
+                    'os': result.get('os'),
+                    'ports': result.get('ports', []),
+                    'vulnerabilities': result.get('vulns', []),
+                    'hostnames': result.get('hostnames', []),
+                    'domains': result.get('domains', []),
+                    'services': [
+                        {
+                            'port': svc.get('port'),
+                            'transport': svc.get('transport'),
+                            'product': svc.get('product'),
+                            'version': svc.get('version')
+                        } for svc in result.get('data', [])[:10]
+                    ]
+                }
+
+                # Add hostnames to subdomains
+                if self.domain:
+                    for hostname in result.get('hostnames', []):
+                        if hostname.endswith(self.domain):
+                            self.results['subdomains']['discovered'].append(hostname)
+
+                if self.config.verbose:
+                    self.print_status(f"Shodan: {len(result.get('ports', []))} ports found", "success")
+
         except Exception as e:
             if self.config.verbose:
                 self.results['errors'].append(f"Shodan failed: {str(e)}")
@@ -1791,10 +1895,10 @@ class DeepWebRecon:
             
             # Check robots.txt
             self._check_robots_txt()
-            
+
             # Check sitemap
             self._check_sitemap()
-            
+
             self.print_status("Web content analysis completed", "success")
             
         except Exception as e:
@@ -1821,19 +1925,19 @@ class DeepWebRecon:
         target_url = self._get_target_url()
         if not target_url:
             return
-        
+
         try:
             sitemap_url = urljoin(target_url, '/sitemap.xml')
             self._rate_limit()
             response = self.session.get(sitemap_url, timeout=5)
-            
+
             if response.status_code == 200:
                 # Extract URLs from sitemap
                 urls = re.findall(r'<loc>(.*?)</loc>', response.text)
                 self.results['web_analysis']['sitemap'] = urls[:100]
         except:
             pass
-    
+
     # ==================== Security Analysis ====================
     
     def security_analysis(self):
@@ -1870,7 +1974,7 @@ class DeepWebRecon:
             
             # WAF detection
             self._detect_waf(response)
-            
+
             self.print_status("Security analysis completed", "success")
             
         except Exception as e:
@@ -1923,15 +2027,15 @@ class DeepWebRecon:
             'Sucuri': ['sucuri', 'x-sucuri'],
             'Wordfence': ['wordfence']
         }
-        
+
         headers_str = str(response.headers).lower()
-        
+
         for waf, indicators in waf_indicators.items():
             for indicator in indicators:
                 if indicator.lower() in headers_str:
                     self.results['security']['waf_detected'] = waf
                     return
-    
+
     # ==================== Utility Methods ====================
     
     def _get_target_url(self) -> Optional[str]:
@@ -1945,31 +2049,26 @@ class DeepWebRecon:
     # ==================== Report Generation ====================
     
     def generate_report(self):
-        """Generate comprehensive reports"""
-        self.print_status("Generating comprehensive reports...", "progress")
-        
+        """Generate JSON report"""
+        self.print_status("Generating report...", "progress")
+
         # Update metadata
         self.results['metadata']['scan_end'] = datetime.now().isoformat()
         self.results['metadata']['duration'] = str(
             datetime.fromisoformat(self.results['metadata']['scan_end']) -
             datetime.fromisoformat(self.results['metadata']['scan_start'])
         )
-        
-        # Clean up data types
+
+        # Clean up data
         self._serialize_results()
-        
-        # Generate reports
+
+        # Generate JSON report
         json_file = self._generate_json_report()
-        txt_file = self._generate_txt_report()
-        html_file = self._generate_html_report()
-        
+
         # Print summary
         self._print_summary()
-        
-        print(f"\n{Fore.GREEN}📁 Reports generated:{Style.RESET_ALL}")
-        print(f"  • JSON: {json_file}")
-        print(f"  • TXT:  {txt_file}")
-        print(f"  • HTML: {html_file}")
+
+        print(f"\n{Fore.GREEN}[+] Report saved: {json_file}{Style.RESET_ALL}")
     
     def _serialize_results(self):
         """Convert to JSON-serializable formats"""
@@ -1982,180 +2081,11 @@ class DeepWebRecon:
         scan_id = self.results['metadata']['scan_id']
         filename = f"{self.config.output_dir}/recon_{self.target.replace('/', '_')}_{scan_id}.json"
         
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             json.dump(self.results, indent=2, fp=f, default=str)
-        
+
         return filename
-    
-    def _generate_txt_report(self) -> str:
-        """Generate text report"""
-        scan_id = self.results['metadata']['scan_id']
-        filename = f"{self.config.output_dir}/recon_{self.target.replace('/', '_')}_{scan_id}.txt"
-        
-        with open(filename, 'w') as f:
-            f.write("="*70 + "\n")
-            f.write("DEEP RECONNAISSANCE REPORT\n")
-            f.write("="*70 + "\n\n")
-            
-            f.write(f"Target: {self.target}\n")
-            f.write(f"Scan ID: {scan_id}\n")
-            f.write(f"Duration: {self.results['metadata'].get('duration', 'N/A')}\n\n")
-            
-            # DNS
-            f.write("-"*70 + "\n")
-            f.write("DNS INTELLIGENCE\n")
-            f.write("-"*70 + "\n")
-            f.write(f"Apex Domain: {self.apex_domain}\n")
-            f.write(f"Nameservers: {len(self.results['dns']['nameservers'])}\n")
-            f.write(f"MX Records: {len(self.results['dns']['mx_records'])}\n")
-            f.write(f"DNSSEC: {'Enabled' if self.results['dns']['dnssec']['enabled'] else 'Disabled'}\n")
-            f.write(f"Zone Transfer Attempts: {len(self.results['dns']['zone_transfer_attempts'])}\n\n")
-            
-            # Ports
-            if self.results['ports']['open']:
-                f.write("-"*70 + "\n")
-                f.write("OPEN PORTS\n")
-                f.write("-"*70 + "\n")
-                for port in self.results['ports']['open']:
-                    service = self.results['ports']['services'].get(port, {})
-                    f.write(f"  • Port {port}: {service.get('name', 'Unknown')}\n")
-                f.write("\n")
-            
-            # Subdomains
-            f.write("-"*70 + "\n")
-            f.write("SUBDOMAIN INTELLIGENCE\n")
-            f.write("-"*70 + "\n")
-            f.write(f"Total Discovered: {len(self.results['subdomains']['discovered'])}\n")
-            f.write(f"Verified Alive: {len(self.results['subdomains']['verified'])}\n\n")
-            
-            for sub in sorted(self.results['subdomains']['discovered'])[:100]:
-                f.write(f"  • {sub}\n")
-            
-            # Content Discovery
-            if self.results['content_discovery']['found']:
-                f.write("\n" + "-"*70 + "\n")
-                f.write("CONTENT DISCOVERY\n")
-                f.write("-"*70 + "\n")
-                f.write(f"Total Found: {len(self.results['content_discovery']['found'])}\n")
-                f.write(f"Interesting: {len(self.results['content_discovery']['interesting'])}\n\n")
-                
-                for item in self.results['content_discovery']['interesting'][:20]:
-                    f.write(f"  • {item['path']} ({item['status']})\n")
-            
-            # OSINT
-            f.write("\n" + "-"*70 + "\n")
-            f.write("OSINT INTELLIGENCE\n")
-            f.write("-"*70 + "\n")
-            f.write(f"Emails: {len(self.results['osint']['emails'])}\n")
-            f.write(f"Employees: {len(self.results['osint']['employees'])}\n")
-            f.write(f"GitHub Mentions: {len(self.results['osint']['code_mentions'])}\n\n")
-            
-            for email in sorted(self.results['osint']['emails'])[:50]:
-                f.write(f"  • {email}\n")
-        
-        return filename
-    
-    def _generate_html_report(self) -> str:
-        """Generate HTML report"""
-        scan_id = self.results['metadata']['scan_id']
-        filename = f"{self.config.output_dir}/recon_{self.target.replace('/', '_')}_{scan_id}.html"
-        
-        # Stats
-        total_subs = len(self.results['subdomains']['discovered'])
-        verified_subs = len(self.results['subdomains']['verified'])
-        emails = len(self.results['osint']['emails'])
-        technologies = len(self.results['technologies']['detected'])
-        open_ports = len(self.results['ports']['open'])
-        content_found = len(self.results['content_discovery']['found'])
-        
-        html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Deep Recon Report - {self.target}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 40px 20px; text-align: center; }}
-        .container {{ max-width: 1200px; margin: 20px auto; padding: 0 20px; }}
-        .card {{ background: white; border-radius: 12px; padding: 25px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; }}
-        .metric {{ text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; }}
-        .metric-value {{ font-size: 36px; font-weight: bold; color: #667eea; }}
-        .metric-label {{ color: #666; font-size: 13px; margin-top: 5px; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
-        th {{ background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; }}
-        td {{ padding: 10px; border-bottom: 1px solid #eee; }}
-        .list {{ list-style: none; max-height: 400px; overflow-y: auto; }}
-        .list li {{ padding: 8px; border-bottom: 1px solid #eee; }}
-        h2 {{ color: #333; margin-bottom: 15px; }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🔍 Deep Reconnaissance Report</h1>
-        <p style="font-size: 1.2em; margin-top: 10px;">Target: {self.target}</p>
-        <p>Scan ID: {scan_id} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>📊 Intelligence Summary</h2>
-            <div class="metrics">
-                <div class="metric">
-                    <div class="metric-value">{total_subs}</div>
-                    <div class="metric-label">Subdomains</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">{verified_subs}</div>
-                    <div class="metric-label">Verified</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">{open_ports}</div>
-                    <div class="metric-label">Open Ports</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">{content_found}</div>
-                    <div class="metric-label">Content Found</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">{emails}</div>
-                    <div class="metric-label">Email Addresses</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value">{technologies}</div>
-                    <div class="metric-label">Technologies</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>🌐 DNS Intelligence</h2>
-            <p><strong>Apex Domain:</strong> {self.apex_domain}</p>
-            <p><strong>Nameservers:</strong> {len(self.results['dns']['nameservers'])}</p>
-            <p><strong>MX Records:</strong> {len(self.results['dns']['mx_records'])}</p>
-            <p><strong>DNSSEC:</strong> {'Enabled' if self.results['dns']['dnssec']['enabled'] else 'Disabled'}</p>
-        </div>
-        
-        <div class="card">
-            <h2>🔗 Subdomain Intelligence ({total_subs} total)</h2>
-            <ul class="list">
-"""
-        
-        for sub in sorted(self.results['subdomains']['discovered'])[:100]:
-            html += f"<li>{sub}</li>\n"
-        
-        html += """
-            </ul>
-        </div>
-    </div>
-</body>
-</html>"""
-        
-        with open(filename, 'w') as f:
-            f.write(html)
-        
-        return filename
-    
+
     def _print_summary(self):
         """Print final summary"""
         print(f"\n{Fore.CYAN}{'='*70}")
@@ -2163,19 +2093,19 @@ class DeepWebRecon:
         print(f"{Fore.CYAN}{'='*70}{Style.RESET_ALL}")
         
         print(f"\n{Fore.GREEN}Intelligence Gathered:{Style.RESET_ALL}")
-        print(f"  • Subdomains: {len(self.results['subdomains']['discovered'])} ({len(self.results['subdomains']['verified'])} verified)")
-        print(f"  • Open Ports: {len(self.results['ports']['open'])}")
-        print(f"  • Content Discovered: {len(self.results['content_discovery']['found'])}")
-        print(f"  • Email Addresses: {len(self.results['osint']['emails'])}")
-        print(f"  • Employees: {len(self.results['osint']['employees'])}")
-        print(f"  • Technologies: {len(self.results['technologies']['detected'])}")
-        print(f"  • Parameters: {len(self.results['parameters']['discovered'])}")
-        
+        print(f"  - Subdomains: {len(self.results['subdomains']['discovered'])} ({len(self.results['subdomains']['verified'])} verified)")
+        print(f"  - Open Ports: {len(self.results['ports']['open'])}")
+        print(f"  - Content Discovered: {len(self.results['content_discovery']['found'])}")
+        print(f"  - Email Addresses: {len(self.results['osint']['emails'])}")
+        print(f"  - Employees: {len(self.results['osint']['employees'])}")
+        print(f"  - Technologies: {len(self.results['technologies']['detected'])}")
+        print(f"  - Parameters: {len(self.results['parameters']['discovered'])}")
+
         if self.results['security'].get('waf_detected'):
-            print(f"\n{Fore.YELLOW}🛡️  WAF: {self.results['security']['waf_detected']}{Style.RESET_ALL}")
-        
+            print(f"\n{Fore.YELLOW}[!] WAF: {self.results['security']['waf_detected']}{Style.RESET_ALL}")
+
         if self.results['errors']:
-            print(f"\n{Fore.YELLOW}⚠️  Errors: {len(self.results['errors'])}{Style.RESET_ALL}")
+            print(f"\n{Fore.YELLOW}[!] Errors: {len(self.results['errors'])}{Style.RESET_ALL}")
     
     # ==================== Main Execution ====================
     
@@ -2225,7 +2155,7 @@ class DeepWebRecon:
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Deep Web Reconnaissance Tool v5.0 - Maximum Intelligence Gathering',
+        description='Deep Web Reconnaissance Tool v5.1 - Maximum Intelligence Gathering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2233,6 +2163,7 @@ Examples:
   python3 %(prog)s business.tiktok.com -v
   python3 %(prog)s example.com -t 20 --skip-verify
   python3 %(prog)s example.com --no-ports --no-content
+  python3 %(prog)s example.com --proxy http://127.0.0.1:8080
         """
     )
     
